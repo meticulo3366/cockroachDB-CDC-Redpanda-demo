@@ -27,6 +27,10 @@ form a full CDC loop between Redpanda and CockroachDB:
 > The changefeed demo uses host ports offset from this one, so both stacks can run at
 > the same time. Each demo is self-contained — `cd` into its directory and run `make up`.
 
+Both demos were built in a Claude Code session using the `redpanda-connect` and
+`cockroachdb` plugins — see [docs/claude-code-tooling.md](docs/claude-code-tooling.md)
+for the plugins, skills, and best practices applied.
+
 ---
 
 ## Table of contents
