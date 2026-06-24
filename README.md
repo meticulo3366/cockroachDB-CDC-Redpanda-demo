@@ -14,6 +14,21 @@
 
 ---
 
+## Two demos in this repo
+
+This repository contains two complementary, independently-runnable demos that together
+form a full CDC loop between Redpanda and CockroachDB:
+
+| Demo | Direction | What it shows |
+|------|-----------|---------------|
+| **Streaming demo** (this README, repo root) | Redpanda → CockroachDB | Redpanda Connect synthesizes data, streams it through Redpanda, and lands it in CockroachDB. |
+| **[Changefeed demo](changefeed-demo/README.md)** (`changefeed-demo/`) | CockroachDB → Redpanda | A CockroachDB `CHANGEFEED` captures row-level INSERT/UPDATE/DELETE changes into Redpanda, and a Redpanda Connect pipeline materializes the change history. |
+
+> The changefeed demo uses host ports offset from this one, so both stacks can run at
+> the same time. Each demo is self-contained — `cd` into its directory and run `make up`.
+
+---
+
 ## Table of contents
 
 - [Architecture](#architecture)

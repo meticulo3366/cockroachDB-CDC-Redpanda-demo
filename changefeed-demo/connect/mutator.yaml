@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------
+# Redpanda Connect: OLTP workload generator (the "change" source)
+#
+#   generate (Bloblang)  -->  switch  -->  sql_raw {INSERT | UPDATE | DELETE}
+#
+# Continuously mutates cdcbank.accounts so the CockroachDB CHANGEFEED has a
+# steady stream of INSERT / UPDATE / DELETE events to capture. This pipeline
+# does NOT touch Redpanda — it only drives changes in the database.
+# ---------------------------------------------------------------------------
+
+input:
+  generate:
+    interval: ${MUTATE_INTERVAL:200ms}   # ~5 mutations/sec
+    mapping: |
+      let owners = ["alice","bob","carol","dave","erin","frank","grace","heidi"]
+      let roll = random_int(min: 1, max: 100)
+
+      # Small, bounded key space (1..50) so UPDATE/DELETE keep hitting live rows.
+      root.id      = random_int(min: 1, max: 50)
+      root.owner   = $owners.index(random_int(min: 0, max: 7))
+      root.balance = random_int(min: 0, max: 1000000).number() / 100
+      root.delta   = (random_int(min: 0, max: 100000).number() - 50000) / 100
+      # Weighted mix: 35% insert, 50% update, 15% delete.
+      root.op      = if $roll <= 35 { "insert" } else if $roll <= 85 { "update" } else { "delete" }
+
+output:
+  switch:
+    cases:
+      - check: this.op == "insert"
+        output:
+          sql_raw:
+            driver: postgres
+            dsn: ${COCKROACH_DSN:postgres://root@cockroachdb:26257/cdcbank?sslmode=disable}
+            query: "INSERT INTO accounts (id, owner, balance, updated_at) VALUES ($1, $2, $3, now()) ON CONFLICT (id) DO NOTHING"
+            args_mapping: 'root = [ this.id, this.owner, this.balance ]'
+      - check: this.op == "update"
+        output:
+          sql_raw:
+            driver: postgres
+            dsn: ${COCKROACH_DSN:postgres://root@cockroachdb:26257/cdcbank?sslmode=disable}
+            # Adjust balance of an existing row (no-op if the id isn't present).
+            query: "UPDATE accounts SET balance = balance + $2, updated_at = now() WHERE id = $1"
+            args_mapping: 'root = [ this.id, this.delta ]'
+      - check: this.op == "delete"
+        output:
+          sql_raw:
+            driver: postgres
+            dsn: ${COCKROACH_DSN:postgres://root@cockroachdb:26257/cdcbank?sslmode=disable}
+            query: "DELETE FROM accounts WHERE id = $1"
+            args_mapping: 'root = [ this.id ]'
+
+metrics:
+  prometheus: {}
+
+logger:
+  level: ${LOG_LEVEL:INFO}
