@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# Redpanda Connect: CockroachDB sink
+#
+#   Redpanda topic "orders"  -->  CockroachDB (cdcdemo.orders)
+#
+# Consumes the order stream with a durable consumer group and writes batches
+# into CockroachDB. This is the "sink" half of the demo.
+# ---------------------------------------------------------------------------
+
+input:
+  redpanda:
+    seed_brokers: [ "${REDPANDA_BROKERS:redpanda:9092}" ]
+    topics: [ "${ORDERS_TOPIC:orders}" ]
+    # Durable group => offsets are committed, so a restart resumes where it
+    # left off (at-least-once delivery). Combined with the upsert below this
+    # gives idempotent ingestion.
+    consumer_group: ${CONSUMER_GROUP:cockroach-sink}
+    start_offset: earliest
+    commit_period: 1s
+
+pipeline:
+  processors:
+    # Parse the JSON payload so the sink can reference fields by name.
+    - mapping: root = content().parse_json()
+
+output:
+  sql_insert:
+    driver: postgres
+    # CockroachDB speaks the PostgreSQL wire protocol. Insecure single-node for
+    # the demo; swap sslmode/credentials for a secure or Cloud cluster.
+    dsn: ${COCKROACH_DSN:postgres://root@cockroachdb:26257/cdcdemo?sslmode=disable}
+    table: orders
+    columns:
+      - order_id
+      - customer_id
+      - status
+      - item
+      - quantity
+      - unit_price
+      - currency
+      - region
+      - created_at
+    args_mapping: |
+      root = [
+        this.order_id,
+        this.customer_id,
+        this.status,
+        this.item,
+        this.quantity,
+        this.unit_price,
+        this.currency,
+        this.region,
+        this.created_at
+      ]
+    # Idempotent ingest: re-delivered events (at-least-once) are no-ops.
+    # `amount` is a computed STORED column and `ingested_at` defaults to now(),
+    # so neither is supplied here.
+    suffix: ON CONFLICT (order_id) DO NOTHING
+    # Batch writes for throughput: flush at 500 rows or every second.
+    batching:
+      count: 500
+      period: 1s
+    max_in_flight: 4
+
+metrics:
+  prometheus: {}
+
+logger:
+  level: ${LOG_LEVEL:INFO}
