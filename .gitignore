@@ -1,0 +1,35 @@
+# ---- Secrets / local environment -------------------------------------------
+# Never commit real credentials or DSNs. .env.example IS tracked (see negation).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+credentials*
+
+# Redpanda Connect drops a license token here when run locally (regenerable).
+redpanda.license
+*.license
+
+# ---- Runtime / generated artifacts -----------------------------------------
+logs/
+*.log
+results/
+*.json.tmp
+data/
+*.dump
+*.sql.bak
+
+# ---- Local tool / editor cruft ----------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# ---- Misc -------------------------------------------------------------------
+tmp/
+.tmp/

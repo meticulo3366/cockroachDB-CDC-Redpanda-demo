@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# Redpanda Connect: synthetic data generator
+#
+#   generate (Bloblang)  -->  Redpanda topic "orders"
+#
+# Produces realistic e-commerce "order" events at a steady rate. This is the
+# "source" half of the demo; the sink pipeline consumes the same topic.
+# ---------------------------------------------------------------------------
+
+input:
+  generate:
+    # One event every 100ms => ~10 orders/sec. Tune via GENERATE_INTERVAL.
+    interval: ${GENERATE_INTERVAL:100ms}
+    # 0 = run forever. Set GENERATE_COUNT to cap total events (handy for tests).
+    count: ${GENERATE_COUNT:0}
+    mapping: |
+      let items = ["widget","gadget","sprocket","cog","flange","gizmo","doohickey"]
+      let regions = ["us-east","us-west","eu-central","ap-south"]
+      let statuses = ["pending","paid","shipped","delivered","cancelled"]
+      let currencies = ["USD","EUR","GBP"]
+
+      # Reuse a small pool of customer UUIDs so a customer accrues many orders,
+      # which makes the customer-history index in CockroachDB meaningful.
+      let customer_pool = [
+        "8f2b1c34-0000-4000-8000-000000000001",
+        "8f2b1c34-0000-4000-8000-000000000002",
+        "8f2b1c34-0000-4000-8000-000000000003",
+        "8f2b1c34-0000-4000-8000-000000000004",
+        "8f2b1c34-0000-4000-8000-000000000005"
+      ]
+
+      # random_int requires a constant max, so index into each pool by its
+      # known length (5 customers, 5 statuses, 7 items, 3 currencies, 4 regions).
+      root.order_id    = uuid_v4()
+      root.customer_id = $customer_pool.index(random_int(min: 0, max: 4))
+      root.status      = $statuses.index(random_int(min: 0, max: 4))
+      root.item        = $items.index(random_int(min: 0, max: 6))
+      root.quantity    = random_int(min: 1, max: 10)
+      root.unit_price  = random_int(min: 100, max: 50000).number() / 100
+      root.currency    = $currencies.index(random_int(min: 0, max: 2))
+      root.region      = $regions.index(random_int(min: 0, max: 3))
+      # RFC3339 event timestamp; the sink maps this into created_at.
+      root.created_at  = now()
+
+output:
+  redpanda:
+    seed_brokers: [ "${REDPANDA_BROKERS:redpanda:9092}" ]
+    topic: ${ORDERS_TOPIC:orders}
+    # Key by order_id so all events for an order land on one partition
+    # (ordered per key) and to enable log compaction if desired.
+    key: ${! this.order_id }
+    # Exactly-once-style producing: dedupe on the broker across retries.
+    idempotent_write: true
+    compression: snappy
+    max_in_flight: 10
+
+# Expose Prometheus metrics + health endpoints on :4195.
+metrics:
+  prometheus: {}
+
+logger:
+  level: ${LOG_LEVEL:INFO}
