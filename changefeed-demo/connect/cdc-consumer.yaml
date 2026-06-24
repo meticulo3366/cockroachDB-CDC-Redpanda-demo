@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# Redpanda Connect: CDC consumer (the downstream of the changefeed)
+#
+#   Redpanda topic "accounts_cdc"  -->  parse envelope  -->  accounts_audit
+#
+# Reads the CockroachDB CHANGEFEED stream, classifies each event as
+# insert/update/delete from the before/after images, and appends it to the
+# accounts_audit history table. Resolved-timestamp markers are dropped.
+# ---------------------------------------------------------------------------
+
+input:
+  redpanda:
+    seed_brokers: [ "${REDPANDA_BROKERS:redpanda:9092}" ]
+    topics: [ "${CDC_TOPIC:accounts_cdc}" ]
+    consumer_group: ${CONSUMER_GROUP:cdc-audit}
+    start_offset: earliest
+    commit_period: 1s
+
+pipeline:
+  processors:
+    - mapping: |
+        let doc = content().parse_json()
+        # The message KEY is the primary key array (e.g. [42]) and is always
+        # present for insert/update/delete — including rapid insert→delete churn
+        # that CockroachDB coalesces into a tombstone with no before/after image.
+        # Taking the id from the key (not from before/after) keeps account_id
+        # non-null on every row.
+        let key = metadata("kafka_key").parse_json().catch(null)
+        # Drop {"resolved": ...} checkpoint markers (no row data) and any message
+        # whose key can't be parsed — rather than poison the batch with a NULL.
+        root = if $doc.exists("resolved") || $key == null {
+          deleted()
+        } else {
+          {
+            "account_id":  $key.index(0),
+            "op":          (if $doc.after == null { "delete" } else if $doc.before == null { "insert" } else { "update" }),
+            "before_doc":  (if $doc.before == null { null } else { $doc.before.string() }),
+            "after_doc":   (if $doc.after == null { null } else { $doc.after.string() }),
+            "updated_hlc": $doc.updated
+          }
+        }
+
+output:
+  sql_raw:
+    driver: postgres
+    dsn: ${COCKROACH_DSN:postgres://root@cockroachdb:26257/cdcbank?sslmode=disable}
+    # Explicit ::jsonb casts so the before/after JSON strings land as JSONB.
+    # ON CONFLICT makes the write idempotent: redelivered CDC events (same
+    # account_id + MVCC timestamp) are no-ops, so the audit log has no duplicates.
+    query: "INSERT INTO accounts_audit (account_id, op, before_doc, after_doc, updated_hlc) VALUES ($1, $2, $3::jsonb, $4::jsonb, $5) ON CONFLICT (account_id, updated_hlc) DO NOTHING"
+    args_mapping: 'root = [ this.account_id, this.op, this.before_doc, this.after_doc, this.updated_hlc ]'
+    batching:
+      count: 200
+      period: 1s
+    max_in_flight: 4
+
+metrics:
+  prometheus: {}
+
+logger:
+  level: ${LOG_LEVEL:INFO}
